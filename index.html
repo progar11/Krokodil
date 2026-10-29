@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Крокодил Онлайн</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #f0f2f5; margin: 0; padding: 20px; }
+        .card { background: white; padding: 20px; border-radius: 8px; max-width: 500px; margin: 0 auto; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        input, button { width: 100%; padding: 10px; margin: 8px 0; box-sizing: border-box; }
+        button { background: #4285F4; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; }
+        button:hover { background: #357ae8; }
+        .hidden { display: none !important; }
+        .player-item { padding: 5px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; }
+        #win-btn { position: fixed; top: 10px; right: 10px; width: auto; background: #34A853; z-index: 100; }
+    </style>
+</head>
+<body>
+
+    <button id="win-btn" class="hidden" onclick="declareWin()">🏆 Я выиграл!</button>
+
+    <div class="card" id="app">
+        <!-- Экран 1: Авторизация -->
+        <div id="screen-auth">
+            <h2>Вход в Крокодил</h2>
+            <button onclick="loginWithGoogle()">Войти через Google</button>
+        </div>
+
+        <!-- Экран 2: Создание профиля -->
+        <div id="screen-profile" class="hidden">
+            <h2>Введите имя в профиле</h2>
+            <input type="text" id="profile-name" placeholder="Ваше имя">
+            <button onclick="saveProfile()">Сохранить</button>
+        </div>
+
+        <!-- Экран 3: Главное меню -->
+        <div id="screen-menu" class="hidden">
+            <h2>Главное меню</h2>
+            <p>Привет, <span id="display-user-name"></span>!</p>
+            <button onclick="createRoomModal()">Создать комнату</button>
+            <hr>
+            <input type="text" id="join-code" placeholder="Код комнаты">
+            <button onclick="joinRoom()">Войти в комнату</button>
+        </div>
+
+        <!-- Экран 4: Комната ожидания -->
+        <div id="screen-room" class="hidden">
+            <h2>Комната (Тема: <span id="room-theme-display"></span>)</h2>
+            <p>Код комнаты: <strong id="room-code-display"></strong></p>
+            <h3>Игроки (макс. 10):</h3>
+            <div id="players-list"></div>
+            <button id="start-game-btn" class="hidden" onclick="startGame()">Начать игру (нужно мин. 3)</button>
+        </div>
+
+        <!-- Экран 5: Ввод слов -->
+        <div id="screen-word-input" class="hidden">
+            <h2>Фаза ввода слов</h2>
+            <p>Тема комнаты: <strong id="input-theme"></strong></p>
+            <p>Введите слово, связанное с темой, которое отгадают другие:</p>
+            <input type="text" id="secret-word-input" placeholder="Ваше слово">
+            <button onclick="submitWord()">Отправить слово</button>
+        </div>
+
+        <!-- Экран 6: Игровой процесс -->
+        <div id="screen-game" class="hidden">
+            <h2>Идет игра! 🐊</h2>
+            <p>Ход игрока: <strong id="current-turn-name"></strong></p>
+            <div id="game-players-list"></div>
+            
+            <div id="turn-controls" class="hidden" style="margin-top: 20px; border-top: 2px solid #ccc; padding-top: 10px;">
+                <p>Ваша очередь управлять вопросом:</p>
+                <button style="background: #34A853;" onclick="handleGuessResult(true)">Угадал (+ ход)</button>
+                <button style="background: #EA4335;" onclick="handleGuessResult(false)">Не угадал (переход хода)</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Подключаем Firebase SDK v10 через модули -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot, collection, query, where, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+        // Ваш реальный конфиг Firebase
+        const firebaseConfig = {
+          apiKey: "AIzaSyCyie8i7cKOmnTS68p_hyakIqVNVOReKhY",
+          authDomain: "krokodil-c57ad.firebaseapp.com",
+          projectId: "krokodil-c57ad",
+          storageBucket: "krokodil-c57ad.firebasestorage.app",
+          messagingSenderId: "111274788107",
+          appId: "1:111274788107:web:557e5aa01ec60191b98e0e"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        let currentUser = null;
+        let currentRoomId = null;
+        let unsubscribeRoom = null;
+
+        window.loginWithGoogle = async () => {
+            const provider = new GoogleAuthProvider();
+            try {
+                await signInWithPopup(auth, provider);
+            } catch (error) {
+                alert("Ошибка входа: " + error.message);
+            }
+        };
+
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                currentUser = user;
+                const userDocRef = doc(db, "users", user.uid);
+                const userSnap = await getDoc(userDocRef);
+                
+                if (userSnap.exists() && userSnap.data().name) {
+                    currentUser.displayNameCustom = userSnap.data().name;
+                    showScreen('screen-menu');
+                    document.getElementById('display-user-name').innerText = currentUser.displayNameCustom;
+                } else {
+                    showScreen('screen-profile');
+                }
+            } else {
+                currentUser = null;
+                showScreen('screen-auth');
+            }
+        });
+
+        window.saveProfile = async () => {
+            const name = document.getElementById('profile-name').value.trim();
+            if (!name) return alert("Введите имя!");
+            
+            await setDoc(doc(db, "users", currentUser.uid), { name, email: currentUser.email });
+            currentUser.displayNameCustom = name;
+            showScreen('screen-menu');
+            document.getElementById('display-user-name').innerText = name;
+        };
+
+        window.createRoomModal = async () => {
+            const theme = prompt("Введите общую тему для игры:");
+            if (!theme) return;
+
+            const roomCode = Math.floor(1000 + Math.random() * 9000).toString();
+            const roomId = "room_" + roomCode;
+
+            const roomData = {
+                code: roomCode,
+                theme: theme,
+                hostId: currentUser.uid,
+                status: 'waiting',
+                players: [{
+                    id: currentUser.uid,
+                    name: currentUser.displayNameCustom,
+                    word: '',
+                    assignedWord: '',
+                    isGuessed: false
+                }],
+                currentTurnIndex: 0
+            };
+
+            await setDoc(doc(db, "rooms", roomId), roomData);
+            enterRoom(roomId);
+        };
+
+        window.joinRoom = async () => {
+            const code = document.getElementById('join-code').value.trim();
+            if (!code) return alert("Введите код комнаты!");
+
+            const q = query(collection(db, "rooms"), where("code", "==", code));
+            const querySnapshot = await getDocs(q);
+
+            if (querySnapshot.empty) {
+                alert("Комната не найдена!");
+                return;
+            }
+
+            const roomDoc = querySnapshot.docs[0];
+            const roomData = roomDoc.data();
+
+            if (roomData.status !== 'waiting') {
+                return alert("Игра уже началась!");
+            }
+            if (roomData.players.length >= 10) {
+                return alert("Комната заполнена (макс. 10 игроков)!");
+            }
+
+            if (!roomData.players.some(p => p.id === currentUser.uid)) {
+                roomData.players.push({
+                    id: currentUser.uid,
+                    name: currentUser.displayNameCustom,
+                    word: '',
+                    assignedWord: '',
+                    isGuessed: false
+                });
+                await updateDoc(doc(db, "rooms", roomDoc.id), { players: roomData.players });
+            }
+
+            enterRoom(roomDoc.id);
+        };
+
+        function enterRoom(roomId) {
+            currentRoomId = roomId;
+            showScreen('screen-room');
+
+            if (unsubscribeRoom) unsubscribeRoom();
+
+            unsubscribeRoom = onSnapshot(doc(db, "rooms", roomId), (docSnap) => {
+                if (!docSnap.exists()) {
+                    alert("Комната была удалена");
+                    leaveToMenu();
+                    return;
+                }
+                const room = docSnap.data();
+                updateRoomUI(room);
+            });
+        }
+
+        function updateRoomUI(room) {
+            document.getElementById('room-theme-display').innerText = room.theme;
+            document.getElementById('room-code-display').innerText = room.code;
+
+            const listEl = document.getElementById('players-list');
+            listEl.innerHTML = '';
+            room.players.forEach(p => {
+                listEl.innerHTML += `<div class="player-item"><span>${p.name}</span> ${p.id === room.hostId ? '<b>(Создатель)</b>' : ''}</div>`;
+            });
+
+            const startBtn = document.getElementById('start-game-btn');
+            if (room.hostId === currentUser.uid && room.status === 'waiting') {
+                if (room.players.length >= 3) {
+                    startBtn.classList.remove('hidden');
+                } else {
+                    startBtn.classList.add('hidden');
+                }
+            } else {
+                startBtn.classList.add('hidden');
+            }
+
+            if (room.status === 'input' && document.getElementById('screen-word-input').classList.contains('hidden')) {
+                showScreen('screen-word-input');
+                document.getElementById('input-theme').innerText = room.theme;
+            } else if (room.status === 'playing') {
+                showScreen('screen-game');
+                renderGame(room);
+            }
+        }
+
+        window.startGame = async () => {
+            await updateDoc(doc(db, "rooms", currentRoomId), { status: 'input' });
+        };
+
+        window.submitWord = async () => {
+            const word = document.getElementById('secret-word-input').value.trim();
+            if (!word) return alert("Введите слово!");
+
+            const roomRef = doc(db, "rooms", currentRoomId);
+            const docSnap = await getDoc(roomRef);
+            const room = docSnap.data();
+
+            const player = room.players.find(p => p.id === currentUser.uid);
+            player.word = word;
+
+            const allSubmitted = room.players.every(p => p.word !== '');
+
+            if (allSubmitted) {
+                let words = room.players.map(p => p.word);
+                let shuffled;
+                let valid = false;
+                while (!valid) {
+                    shuffled = [...words].sort(() => Math.random() - 0.5);
+                    valid = room.players.every((p, i) => p.word !== shuffled[i]);
+                }
+
+                room.players.forEach((p, i) => {
+                    p.assignedWord = shuffled[i];
+                });
+
+                room.status = 'playing';
+            }
+
+            await updateDoc(roomRef, { players: room.players, status: room.status });
+        };
+
+        function renderGame(room) {
+            document.getElementById('win-btn').classList.remove('hidden');
+            const currentTurnPlayer = room.players[room.currentTurnIndex % room.players.length];
+            document.getElementById('current-turn-name').innerText = currentTurnPlayer.name;
+
+            const listEl = document.getElementById('game-players-list');
+            listEl.innerHTML = '';
+
+            room.players.forEach(p => {
+                let wordInfo = (p.id === currentUser.uid) 
+                    ? "<i>(Ваше слово скрыто от вас)</i>" 
+                    : `Слово: <b>${p.assignedWord}</b>`;
+
+                listEl.innerHTML += `
+                    <div class="player-item" style="background: ${p.isGuessed ? '#e6ffe6' : 'white'}">
+                        <span>${p.name} ${p.isGuessed ? '✅ Угадал' : ''}</span>
+                        <span>${wordInfo}</span>
+                    </div>
+                `;
+            });
+
+            const turnControls = document.getElementById('turn-controls');
+            if (currentTurnPlayer.id === currentUser.uid) {
+                turnControls.classList.remove('hidden');
+            } else {
+                turnControls.classList.add('hidden');
+            }
+        }
+
+        window.handleGuessResult = async (guessed) => {
+            const roomRef = doc(db, "rooms", currentRoomId);
+            const docSnap = await getDoc(roomRef);
+            const room = docSnap.data();
+
+            if (guessed) {
+                room.players[room.currentTurnIndex % room.players.length].isGuessed = true;
+            } else {
+                room.currentTurnIndex += 1;
+            }
+
+            await updateDoc(roomRef, { 
+                players: room.players, 
+                currentTurnIndex: room.currentTurnIndex 
+            });
+        };
+
+        window.declareWin = async () => {
+            alert("Поздравляем с победой! Комната удаляется, игра завершена.");
+            if (currentRoomId) {
+                await deleteDoc(doc(db, "rooms", currentRoomId));
+            }
+            leaveToMenu();
+        };
+
+        function leaveToMenu() {
+            if (unsubscribeRoom) unsubscribeRoom();
+            currentRoomId = null;
+            document.getElementById('win-btn').classList.add('hidden');
+            showScreen('screen-menu');
+        }
+
+        function showScreen(screenId) {
+            ['screen-auth', 'screen-profile', 'screen-menu', 'screen-room', 'screen-word-input', 'screen-game'].forEach(id => {
+                document.getElementById(id).classList.add('hidden');
+            });
+            document.getElementById(screenId).classList.remove('hidden');
+        }
+    </script>
+</body>
+</html>
